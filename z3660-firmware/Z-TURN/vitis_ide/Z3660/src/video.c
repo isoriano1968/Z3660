@@ -342,8 +342,63 @@ void video_reset(void) {
    pl_mpeg_arm_close();
    cached_videomode=-1;
 }
+// Overlay double buffering: the MPEG decoder writes a frame into the back
+// buffer and asks for a flip; the vblank interrupt makes it by pointing the
+// overlay VDMA at that buffer.  Before, frames were written into the buffer
+// being shown (torn lines).
+#define OVL_BUFFER0 (RTG_BASE+0x06000000)
+#define OVL_BUFFER1 (RTG_BASE+0x06800000) // 8 MB up to 0x07000000 (the MPEG sound); under AMIX nothing else uses it
+static uint32_t ovl_front = OVL_BUFFER0;
+static volatile uint32_t ovl_flip_to;   // a flip asked for, made at the next vblank
+
+static void overlay_set_buffer(uint32_t addr)
+{
+   OVL_ReadCfg.FrameStoreStartAddr[0] = addr;
+   XAxiVdma_DmaSetBufferAddr(&vdma_ovl, XAXIVDMA_READ, OVL_ReadCfg.FrameStoreStartAddr);
+}
+
+// the buffer to draw the next frame into
+uint32_t *overlay_back_buffer(void)
+{
+   // the last flip not made yet: that buffer is about to be shown.  Bounded,
+   // in case no vblank comes (50 ms)
+   for (int i = 0; ovl_flip_to && overlay_is_enabled && i < 1000; i++)
+      usleep(50);
+   if (ovl_flip_to) {      // overlay not running: no vblank will take it
+      ovl_front = ovl_flip_to;
+      ovl_flip_to = 0;
+   }
+   return (uint32_t *)(ovl_front == OVL_BUFFER0 ? OVL_BUFFER1 : OVL_BUFFER0);
+}
+
+// the back buffer holds a whole frame: show it from the next vblank on
+void overlay_flip(void)
+{
+   ovl_flip_to = ovl_front == OVL_BUFFER0 ? OVL_BUFFER1 : OVL_BUFFER0;
+}
+
+// How many pixels of each buffer line the overlay VDMA fetches (see
+// init_vdma_ovl).  At 1920x1080 a full-width fetch (1920 beats of 32 bits)
+// does not fit into one output line, so the VDMA slipped to one buffer row
+// every second line and the overlay came out twice as tall.
+static int ovl_fetch_w = -1;
+
+static int overlay_fetch_width(int hsize)
+{
+   int w = overlay_w;
+   if (w <= 0 || w > hsize)
+      w = hsize;
+   return (w + 1) & ~1; // even, so a line is a multiple of 8 bytes
+}
+
 void enable_overlay(void)
 {
+   // the fetch width follows the overlay's width: reconfigure the VDMA when
+   // it changed (it is started again at the next vsync, below)
+   if (overlay_fetch_width(vs.vmode_hsize) != ovl_fetch_w) {
+      stop_vdma_ovl();
+      init_vdma_ovl(vs.vmode_hsize, vs.vmode_vsize, 1, 1, ovl_front);
+   }
    video_formatter_write((overlay_y << 16) | overlay_x, MNTVF_OP_OVERLAY_XY);
    video_formatter_write((overlay_h << 16) | overlay_w, MNTVF_OP_OVERLAY_WH);
    video_formatter_write(1, MNTVF_OP_OVERLAY_ENABLE);
@@ -948,7 +1003,12 @@ int init_vdma_ovl(int hsize, int vsize, int hdiv, int vdiv, uint32_t bufpos) {
    //printf("VDMA HDIV: %d VDIV: %d\n", hdiv, vdiv);
 
    OVL_ReadCfg.VertSizeInput = vsize / vdiv;
-   OVL_ReadCfg.HoriSizeInput = (hsize * (OVL_Config->Mm2SStreamWidth >> 3)) / hdiv; // note: changing this breaks the output
+   // Fetch only the overlay's width of each line: the stride stays a full
+   // screen line (the MPEG decoder writes rows with pitch vmode_hsize * 4),
+   // the line buffer in video_formatter.v starts over at each TLAST and is
+   // read at counter_x - overlay_x, so column 0 is the overlay's first pixel.
+   ovl_fetch_w = overlay_fetch_width(hsize);
+   OVL_ReadCfg.HoriSizeInput = (ovl_fetch_w * (OVL_Config->Mm2SStreamWidth >> 3)) / hdiv;
    OVL_ReadCfg.FrameDelay = 0; /* This example does not test frame delay */
    OVL_ReadCfg.EnableCircularBuf = 1; /* Only 1 buffer, continuous loop */
    OVL_ReadCfg.EnableSync = 0; /* Gen-Lock */
@@ -1041,8 +1101,31 @@ void isr_video(void *dummy)
          video_formatter_write(0, MNTVF_OP_PALETTE_SEL);
       }
       init_vdma_irq(vs.vmode_hsize, vs.vmode_vsize, vs.vmode_hdiv, vs.vmode_vdiv, ((uint32_t)vs.framebuffer) + vs.framebuffer_pan_offset);
+      {
+         // core 1 (vplay-amix player) asks for flips through the loader block
+         // (main.c C1LD_OFF): word 9 = 1 or 2, the buffer to show; word 10 = the
+         // one shown, for core 1 to draw into the other
+         volatile uint32_t *c1=(volatile uint32_t *)(RTG_BASE+0x07AFE000UL);
+         uint32_t f=__builtin_bswap32(c1[9]);
+         if(f==1 || f==2)
+         {
+            uint32_t to=f==1?OVL_BUFFER0:OVL_BUFFER1;
+            if(to!=ovl_front)
+               ovl_flip_to=to;
+            c1[9]=0;
+         }
+      }
+      if(ovl_flip_to && overlay_is_enabled)
+      {
+         // the VDMA takes a new address at its next frame start
+         overlay_set_buffer(ovl_flip_to);
+         ovl_front = ovl_flip_to;
+         ovl_flip_to = 0;
+      }
+      ((volatile uint32_t *)(RTG_BASE+0x07AFE000UL))[10]=__builtin_bswap32(ovl_front==OVL_BUFFER0?1:2);
       if(enable_overlay_on_next_vsync)
       {
+         overlay_set_buffer(ovl_front);
          start_vdma_ovl();
          enable_overlay_on_next_vsync=0;
          overlay_is_enabled=1;
@@ -1219,7 +1302,7 @@ void video_system_init(zz_video_mode *mode, int hdiv, int vdiv) {
    set_pixelclock(mode);
    sii9022_init(mode);
    init_vdma_vid(mode->hres, mode->vres, hdiv, vdiv, (uint32_t)vs.framebuffer + vs.framebuffer_pan_offset);
-   init_vdma_ovl(mode->hres, mode->vres, 1, 1, RTG_BASE+0x06000000); // overlay always uses full res and 32-bit pixels, so hdiv=1, vdiv=1
+   init_vdma_ovl(mode->hres, mode->vres, 1, 1, ovl_front); // overlay always uses full res and 32-bit pixels, so hdiv=1, vdiv=1
    if(overlay_is_enabled)
       enable_overlay_on_next_vsync=1;
 }

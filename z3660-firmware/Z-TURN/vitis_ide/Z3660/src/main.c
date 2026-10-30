@@ -706,6 +706,82 @@ extern volatile int read_reset;
 int reset_time_counter=0;
 int reset_time_counter_max=60*4;
 void other_tasks(void);
+
+// core1 loader (vplay-amix arm/h264bench): with a real 060, core 1 is idle (in the boot
+// ROM's wait loop); the 68k can put a core 1 image into board memory and have it started
+// here, without a new BOOT image on the SD card. The 68k fills the block at board offset
+// C1LD_OFF (big-endian words, uncached on both sides: the MPEG FIFO's megabyte) and
+// writes C1LD_CMD_LOAD; core 0 copies the image into core 1's region and starts core 1
+// the way the emulator is started (0xFFFFFFF0 + SEV). Once only: core 1 is never reset
+// from here (an SLCR reset of core 1 froze core 0): another image needs a power cycle.
+#define C1LD_OFF          0x07AFE000UL
+#define C1LD_MAGIC        0x43314C44UL   // "C1LD": the loader is there
+#define C1LD_CMD_LOAD     0x4C4F4144UL   // "LOAD"
+#define C1LD_CMD_STOP     0x53544F50UL   // "STOP": refused, kept so old clients get an answer
+enum { C1LD_W_MAGIC, C1LD_W_CMD, C1LD_W_SRC, C1LD_W_SIZE, C1LD_W_ADDR, C1LD_W_ENTRY,
+       C1LD_W_STATUS, C1LD_W_COUNT,
+       C1LD_W_FEAT,       // what this firmware does: C1LD_FEAT_*
+       C1LD_W_FLIP,       // core 1: 1/2 = show overlay buffer 0/1 from the next vblank (video.c)
+       C1LD_W_FRONT };    // core 0: the overlay buffer shown (1/2)
+#define C1LD_FEAT_OVL_FETCH  1   // the overlay VDMA fetches only the overlay's width (1:1 at 1080p)
+#define C1LD_FEAT_OVL_FLIP   2   // two overlay buffers (0x06000000, 0x06800000), flipped at vblank
+// C1LD_W_STATUS: 1 started; negative: refused (nothing changed), -4 core 1 already runs
+// (loader v3: flushes only the copied range, not the whole L2)
+#define C1LD_REGION_LO    0x38000000UL   // clear of the emulator and SMUSH at 0x30000000
+#define C1LD_REGION_HI    0x40000000UL
+static volatile uint32_t *c1ld=(volatile uint32_t *)(RTG_BASE+C1LD_OFF);
+static int core1_started=0;
+static uint32_t c1ld_get(int w) { return __builtin_bswap32(c1ld[w]); }
+static void c1ld_put(int w, uint32_t v) { c1ld[w]=__builtin_bswap32(v); }
+static void core1_loader_init(void)
+{
+   c1ld_put(C1LD_W_CMD,0);
+   c1ld_put(C1LD_W_STATUS,0);
+   c1ld_put(C1LD_W_COUNT,0);
+   c1ld_put(C1LD_W_FLIP,0);
+   c1ld_put(C1LD_W_FRONT,1);
+   c1ld_put(C1LD_W_FEAT,C1LD_FEAT_OVL_FETCH|C1LD_FEAT_OVL_FLIP);
+   c1ld_put(C1LD_W_MAGIC,C1LD_MAGIC);
+}
+static void core1_loader_poll(void)
+{
+   uint32_t cmd=c1ld_get(C1LD_W_CMD);
+   if(cmd!=C1LD_CMD_LOAD && cmd!=C1LD_CMD_STOP)
+      return;
+   uint32_t src=c1ld_get(C1LD_W_SRC), size=c1ld_get(C1LD_W_SIZE);
+   uint32_t addr=c1ld_get(C1LD_W_ADDR), entry=c1ld_get(C1LD_W_ENTRY);
+   int32_t err=0;
+   if(core1_started)
+      err=-4;   // a second image needs a power cycle
+   else if(cmd==C1LD_CMD_STOP)
+      err=-5;
+   else if(src<0x00200000UL || src>=0x07A00000UL || size==0 || size>0x07A00000UL-src)
+      err=-1;   // the image must lie in board memory below the shared block
+   else if(addr<C1LD_REGION_LO || size>C1LD_REGION_HI-addr || (addr&3))
+      err=-2;   // and go into core 1's region
+   else if(entry<addr || entry>=addr+size || (entry&3))
+      err=-3;
+   if(err)
+   {
+      c1ld_put(C1LD_W_STATUS,(uint32_t)err);
+      c1ld_put(C1LD_W_CMD,0);
+      return;
+   }
+   memcpy((void *)addr,(const void *)(RTG_BASE+src),size);
+   // Only the copied range goes out of the caches: a whole Xil_DCacheFlush()
+   // stops the L2's line fills while it runs, the 060 (running on, unlike during
+   // SCSI I/O, where it waits on the register access) then misses its RAM and
+   // takes a bus error -- seen as a kernel fault in AMIX.
+   Xil_DCacheFlushRange(addr,size);
+   *(volatile uint32_t *)0xFFFF0000=1;          // OCM, uncached
+   *(volatile uint32_t *)(0xFFFFFFF0)=entry;
+   dsb();
+   __asm__("sev");
+   core1_started=1;
+   c1ld_put(C1LD_W_COUNT,c1ld_get(C1LD_W_COUNT)+1);
+   c1ld_put(C1LD_W_STATUS,1);
+   c1ld_put(C1LD_W_CMD,0);
+}
 extern long int task_counter;
 
 int reset_thread(struct pt *pt)
@@ -1833,6 +1909,25 @@ int main()
    usb_read_pending = 0;
    usb_write_pending = 0;
 
+   // h264bench (vplay-amix arm/h264bench): with a real 060, core 1 is idle; a test image
+   // loaded at 0x38000000 starts with the mark "H264" and its entry. It touches neither the
+   // bus nor the 68k, only board memory, and answers the same handshake as the emulator.
+#define H264BENCH_BASE 0x38000000
+   if(emu!=1 && *(volatile uint32_t *)H264BENCH_BASE==0x48323634)
+   {
+      volatile uint32_t *ack=(volatile uint32_t *)0xFFFF0000;
+      printf("Starting h264bench on Core1 at 0x%08lX\n",*(volatile uint32_t *)(H264BENCH_BASE+4));
+      *ack=1;
+      *(volatile uint32_t *)(0xFFFFFFF0)=*(volatile uint32_t *)(H264BENCH_BASE+4);
+      Xil_DCacheFlush();
+      Xil_ICacheInvalidate();
+      __asm__("sev");
+      core1_started=1;
+      for(int i=0;i<1000 && *ack==1;i++)
+         xc3_usleep(1000);
+      printf(*ack==1?"h264bench: no answer from Core1\n":"h264bench: Core1 runs\n");
+   }
+
    if(emu==1) // EMUs
    {
       configure_clk(config.cpufreq,1,1);
@@ -1932,6 +2027,7 @@ int main()
    // Check USB interrupt status BEFORE starting 060
 //   check_usb_interrupt_status("Before 060 startup");
    
+   core1_loader_init();
    CPLD_RESET_ARM(1); // CPLD RUN -> 060 RUN
    NBR_ARM(1);        // relinquish bus
    xc3_usleep(1000);
@@ -1969,6 +2065,14 @@ int main()
          }
          ethernet_thread(&pt_ethernet);
          usb_thread(&pt_usb);
+         {
+            static int core1_loader_counter=0;
+            if(++core1_loader_counter==40)
+            {
+               core1_loader_poll();
+               core1_loader_counter=0;
+            }
+         }
          other_tasks();
          task_counter++;
          break;

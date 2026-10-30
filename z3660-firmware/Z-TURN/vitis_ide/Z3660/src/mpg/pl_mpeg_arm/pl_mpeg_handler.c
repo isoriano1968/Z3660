@@ -64,6 +64,8 @@ extern int16_t overlay_h;
 extern int overlay_is_enabled;
 void enable_overlay(void);
 void disable_overlay(void);
+uint32_t *overlay_back_buffer(void);
+void overlay_flip(void);
 // Anti-aliasing intensity control (1-10, higher = more smoothing)
 int dithering_intensity = 0;
 // Grayscale mode flag (0 = color, 1 = grayscale)
@@ -517,7 +519,7 @@ static void pl_mpeg_video_callback(plm_t *plm, plm_frame_t *frame, void *user) {
 // so we can write directly to it without worrying about the pitch or offsets.
 //            uint32_t *framebuffer = (uint32_t *)be32_to_host(plm_shared->display_frame.framebuffer_addr);
 //            uint32_t pitch = be32_to_host(plm_shared->display_frame.framebuffer_pitch);
-        uint32_t *ovl_framebuffer = (uint32_t *)(RTG_BASE+0x06000000);//(uint32_t *)be32_to_host(plm_shared->display_frame.framebuffer_addr);
+        uint32_t *ovl_framebuffer = overlay_back_buffer(); // double buffered: the one not shown
         uint32_t ovl_pitch = vs.vmode_hsize * 4; // Calculate pitch based on video mode width and 4 bytes per pixel
             
         if (ovl_framebuffer && ovl_pitch > 0) {
@@ -805,7 +807,10 @@ static void pl_mpeg_video_callback(plm_t *plm, plm_frame_t *frame, void *user) {
             // Show FPS overlay on framebuffer for debugging
             if(show_fps)
                 draw_fps_overlay(ovl_framebuffer, width, height, ovl_pitch);
-            Xil_L2CacheFlushRange((uintptr_t)ovl_framebuffer, height * ovl_pitch);
+            // the frame is at rows overlay_y.. (it was flushed from row 0)
+            Xil_L2CacheFlushRange((uintptr_t)(ovl_framebuffer + (overlay_y > 0 ? overlay_y : 0) * (ovl_pitch / 4)),
+                                  height * ovl_pitch);
+            overlay_flip();
         } else {
             printf("[PL_MPEG ARM] WARNING: Invalid framebuffer address or pitch\n");
         }
