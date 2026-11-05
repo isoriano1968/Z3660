@@ -102,8 +102,15 @@ static void amix_sb_crumb(const char *op, uint64_t start, uint32_t len, const ui
 #define PISCSI_STATS          1
 #define PISCSI_STATS_PERIOD_S 5
 
+/* CPU RAM the ARM reaches 1:1: 0x08000000-0x0FFFFFFF, and with cpu_ram2 also
+ * 0x10000000-0x17FFFFFF (the memory map's "More RAM").  DMA to/from a buffer
+ * above the old top went through the bounce buffer, and a WRITE then put
+ * stale bytes on the disk (AMIX superblock, pvmk's PVMK volume, 2026-11-05). */
+#define CPU_RAM_TOP (config.cpu_ram2 ? 0x18000000 : 0x10000000)
+
 #if PISCSI_STATS
 #include "xtime_l.h"
+
 extern uint32_t counts_per_second;   /* tracks the live ARM clock (main.c) */
 extern PISCSI_DEV devs[];            /* defined further down this file       */
 
@@ -1421,7 +1428,7 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       // buffers live in Zynq-local DDR at $08000000 (drct_bank, guest==host 1:1), so honour
       // that contract here. cpu_ram stays force-disabled for AMIX (no $08 autoconfig board);
       // amix_mode alone re-enables the direct path for the drct_bank CPU-RAM window.
-      if ( ((config.cpu_ram || config.amix_mode) && (map>=0x08000000) && (map<0x10000000))
+      if ( ((config.cpu_ram || config.amix_mode) && (map>=0x08000000) && (map<CPU_RAM_TOP))
          ||(config.autoconfig_ram && (map>=0x40000000) && (map<0x50000000))
       )
       {
@@ -1595,7 +1602,7 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       // into board+0x80000 only for buffers < 0x08000000 (z3660.c:254 / z3660_scsi.c:402),
       // so a buffer at/above $08000000 is NOT in the bounce and MUST be read directly from
       // the drct_bank DDR CPU-RAM (guest==host 1:1); bouncing it would write stale bytes.
-      if ( ((map>=0x08000000) && (map<0x10000000) && (config.cpu_ram || config.amix_mode))
+      if ( ((map>=0x08000000) && (map<CPU_RAM_TOP) && (config.cpu_ram || config.amix_mode))
             ||((map>=0x40000000) && (map<0x50000000) && config.autoconfig_ram)
       )
       {
@@ -1729,7 +1736,7 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
    case PISCSI_CMD_DRIVER:
       DEBUG("[PISCSI] Driver copy/patch called, destination address %.8lX.\n", val);
       //            r = 0;//get_mapped_item_by_address(cfg, val);
-      if ( ((val>=0x08000000) && (val<0x10000000) && config.cpu_ram)
+      if ( ((val>=0x08000000) && (val<CPU_RAM_TOP) && config.cpu_ram)
             ||((val>=0x40000000) && (val<0x50000000) && config.autoconfig_ram)
       )
       {
@@ -1827,7 +1834,7 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       break;
    case PISCSI_CMD_COPYFS: {
       uint32_t addr=val;
-      if ( ((addr>=0x08000000) && (addr<0x10000000) && config.cpu_ram)
+      if ( ((addr>=0x08000000) && (addr<CPU_RAM_TOP) && config.cpu_ram)
             ||((addr>=0x40000000) && (addr<0x50000000) && config.autoconfig_ram)
       )
       {
@@ -1855,7 +1862,7 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       int i = 0;
       DEBUG("[PISCSI] Set handler for partition %ld (DeviceNode: %.8lX)\n", rom_cur_partition, val);
       uint32_t addr = val;// - cfg->map_offset[r];
-      if ( ((addr>=0x08000000) && (addr<0x10000000) && config.cpu_ram)
+      if ( ((addr>=0x08000000) && (addr<CPU_RAM_TOP) && config.cpu_ram)
             ||((addr>=0x40000000) && (addr<0x50000000) && config.autoconfig_ram)
       )
       {
@@ -1897,7 +1904,7 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       DEBUG("[PISCSI] Attempt to load file system for partition %ld from disk.\n", rom_cur_partition);
       printf("->>>>>>>>>>>>>>>>>>> a1 %08lX\n",val);
       uint32_t addr = val;
-      if ( ((addr>=0x08000000) && (addr<0x10000000) && config.cpu_ram)
+      if ( ((addr>=0x08000000) && (addr<CPU_RAM_TOP) && config.cpu_ram)
             ||((addr>=0x40000000) && (addr<0x50000000) && config.autoconfig_ram)
       )
       {
@@ -1941,7 +1948,7 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       print_piscsi_debug_message(val);
       break;
    case PISCSI_CMD_EXPBASE: {
-      if(val>=0x08000000 && val<0x10000000)
+      if(val>=0x08000000 && val<CPU_RAM_TOP)
       {
          char *str=(char*)val+1;
          char drivename[20];
