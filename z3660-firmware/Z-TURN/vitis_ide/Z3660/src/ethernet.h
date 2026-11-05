@@ -33,6 +33,7 @@ void ethernet_update_mac_address();
 volatile uint8_t* ethernet_current_receive_ptr();
 int ethernet_get_backlog();
 void ethernet_task();
+void c1net_poll(void);
 void PrintEthernetPLLFrequencies_z3660();
 void FixEthernetPLLDivisors_z3660();
 

@@ -683,6 +683,13 @@ void rtg_cache_policy_core0(uint32_t ini, uint32_t fb_policy, uint32_t soft3d_po
       setMMU(address,address|AUDIO_CACHE_POLICY);
       setMMU(i*0x100000UL,address|AUDIO_CACHE_POLICY);
    }
+   // core 1's network rings (core1_net.h): core 1 writes them, so not write-through here
+   for(unsigned int i=ini+0x079,j=0x079;j<0x07A;i++,j++)
+   {
+      uint32_t address=(RTG_BASE+j*0x100000UL);
+      setMMU(address,address|ETHERNET_CACHE_POLICY);
+      setMMU(i*0x100000UL,address|ETHERNET_CACHE_POLICY);
+   }
    // Mpeg
    for(unsigned int i=ini+0x07A,j=0x07A;j<0x07B;i++,j++)
    {
@@ -729,6 +736,7 @@ enum { C1LD_W_MAGIC, C1LD_W_CMD, C1LD_W_SRC, C1LD_W_SIZE, C1LD_W_ADDR, C1LD_W_EN
        C1LD_W_FRONT };    // core 0: the overlay buffer shown (1/2)
 #define C1LD_FEAT_OVL_FETCH  1   // the overlay VDMA fetches only the overlay's width (1:1 at 1080p)
 #define C1LD_FEAT_OVL_FLIP   2   // two overlay buffers (0x06000000, 0x06800000), flipped at vblank
+#define C1LD_FEAT_NET        4   // core 1's own network (core1_net.h)
 // C1LD_W_STATUS: 1 started; negative: refused (nothing changed), -4 core 1 already runs
 // (loader v3: flushes only the copied range, not the whole L2)
 #define C1LD_REGION_LO    0x38000000UL   // clear of the emulator and SMUSH at 0x30000000
@@ -744,7 +752,7 @@ static void core1_loader_init(void)
    c1ld_put(C1LD_W_COUNT,0);
    c1ld_put(C1LD_W_FLIP,0);
    c1ld_put(C1LD_W_FRONT,1);
-   c1ld_put(C1LD_W_FEAT,C1LD_FEAT_OVL_FETCH|C1LD_FEAT_OVL_FLIP);
+   c1ld_put(C1LD_W_FEAT,C1LD_FEAT_OVL_FETCH|C1LD_FEAT_OVL_FLIP|C1LD_FEAT_NET);
    c1ld_put(C1LD_W_MAGIC,C1LD_MAGIC);
 }
 static void core1_loader_poll(void)
@@ -2080,6 +2088,7 @@ int main()
             }
          }
          ethernet_thread(&pt_ethernet);
+         c1net_poll();          // core 1's frames out, every turn: its TCP waits on them
          usb_thread(&pt_usb);
          {
             static int core1_loader_counter=0;

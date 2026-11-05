@@ -36,11 +36,17 @@
 #include "memorymap.h"
 #include "main.h"
 #include "debug_console.h"
+#include "core1_net.h"
+#include <string.h>
 extern DEBUG_CONSOLE debug_console;
 
 void SetUpSLCRDivisors_z3660(UINTPTR mac_baseaddr, int32_t speed);
 
 static XEmacPs EmacPsInstance;
+static void c1net_init(void);
+static int c1net_rx(const uint8_t *f, int len);
+static void c1net_mac(void);
+static void c1net_filter(void);
 volatile int semaphore=0;
 void DEBUG_ETHERNET(const char *format, ...)
 {
@@ -295,6 +301,7 @@ int ethernet_init() {
    ethernet_task_state = ETH_TASK_SETUP;
    frames_backlog = 0;
    frames_received_from_backlog = 0;
+   c1net_init();
 
    DeviceErrors = 0;
    FramesTx = 0;
@@ -598,7 +605,9 @@ static void xEmacPsRecvHandler(void *Callback)
 //         Xil_L1DCacheFlushRange((UINTPTR)frame_ptr, FRAME_SIZE);
 //         Xil_L2CacheFlushRange((UINTPTR)frame_ptr, FRAME_SIZE);
 
-         if (frames_backlog<FRAME_MAX_BACKLOG) {
+         if (c1net_rx(frame_ptr, rx_bytes)) {
+            // core 1's own: not the Amiga's
+         } else if (frames_backlog<FRAME_MAX_BACKLOG) {
             // copy the frame to the backlog (frames that amiga hasn't fetched yet)
             uint8_t* frame_bl_ptr = (uint8_t*)(RTG_BASE+RX_BACKLOG_ADDRESS+frames_backlog*FRAME_SIZE);
             memcpy(frame_bl_ptr+RX_FRAME_PAD, frame_ptr, rx_bytes);
@@ -737,6 +746,8 @@ void ethernet_update_mac_address() {
                        ((uint32_t)EmacPsMAC[2] << 16) | ((uint32_t)EmacPsMAC[3] << 24));
       XEmacPs_WriteReg(b, XEMACPS_LADDR1H_OFFSET, (uint32_t)EmacPsMAC[4] | ((uint32_t)EmacPsMAC[5] << 8));
    }
+   c1net_mac();                // core 1's follows the Amiga's
+   c1net_filter();
 #else
    XEmacPs_Stop(EmacPsInstancePtr);
 
@@ -1109,7 +1120,14 @@ static LONG emacPsSetupIntrSystem(XEmacPs *EmacPsInstancePtr, uint16_t EmacPsInt
    return(XST_SUCCESS);
 }
 
+static uint16_t eth_send(volatile char *buf, uint16_t frame_size);
+
 uint16_t ethernet_send_frame(uint16_t frame_size) {
+   return eth_send(TxFrame, frame_size);
+}
+
+// a frame from buf: the Amiga's (TxFrame) or core 1's (its TX ring); waits until it is out
+static uint16_t eth_send(volatile char *buf, uint16_t frame_size) {
    XEmacPs* EmacPsInstancePtr = &EmacPsInstance;
    XEmacPs_Bd *BdTxPtr;
 
@@ -1120,8 +1138,8 @@ uint16_t ethernet_send_frame(uint16_t frame_size) {
    uint32_t old_frames_tx = FramesTx;
 
 //   Xil_DCacheInvalidateRange((UINTPTR)TxFrame, sizeof(EthernetFrame));
-   Xil_L1DCacheFlushRange((UINTPTR)TxFrame, sizeof(EthernetFrame));
-   Xil_L2CacheFlushRange((UINTPTR)TxFrame, sizeof(EthernetFrame));
+   Xil_L1DCacheFlushRange((UINTPTR)buf, sizeof(EthernetFrame));
+   Xil_L2CacheFlushRange((UINTPTR)buf, sizeof(EthernetFrame));
 
    //   printf("ethernet_send_frame: %lu %d\n",old_frames_tx,frame_size);
    /*
@@ -1142,7 +1160,7 @@ uint16_t ethernet_send_frame(uint16_t frame_size) {
       return(2);
    }
 
-   XEmacPs_BdSetAddressTx(BdTxPtr, TxFrame);
+   XEmacPs_BdSetAddressTx(BdTxPtr, buf);
    XEmacPs_BdSetLength(BdTxPtr, frame_size);
    XEmacPs_BdClearTxUsed(BdTxPtr);
    XEmacPs_BdSetLast(BdTxPtr);
@@ -1305,4 +1323,115 @@ void FixEthernetPLLDivisors_z3660()
    }
    
 //   printf("=== End of correction ===\n");
+}
+
+/*
+ * core 1's network (core1_net.h): its MAC beside the Amiga's, its frames and
+ * the broadcasts into its RX ring (the RX handler), its TX ring sent from
+ * core 0's main loop (c1net_poll).  Off until core 1 sets C1NET_W_ON.
+ */
+static volatile uint32_t *const c1n = (volatile uint32_t *)(RTG_BASE + C1NET_OFF);
+static int c1n_on;              // the GEM has core 1's address (address 2)
+static uint8_t c1n_mac[6];
+
+// at power-on all of it; after an Amiga reset (ethernet_init again) core 1 may run on: its
+// words and the rings stay, the GEM's address 2 is set again by c1net_poll
+static void c1net_init(void)
+{
+   c1n_on = 0;
+   if (c1n[C1NET_W_MAGIC] != C1NET_MAGIC) {
+      for (int i = 0; i < C1NET_W_NWORDS; i++)
+         c1n[i] = 0;
+   }
+   c1net_mac();
+   c1n[C1NET_W_MAGIC] = C1NET_MAGIC;
+}
+
+// the Amiga's MAC, locally administered (another one if it already is)
+static void c1net_mac(void)
+{
+   memcpy(c1n_mac, EmacPsMAC, 6);
+   if (c1n_mac[0] & 2)
+      c1n_mac[5] ^= 1;
+   else
+      c1n_mac[0] |= 2;
+   c1n[C1NET_W_MACLO] = (uint32_t)c1n_mac[0] | (uint32_t)c1n_mac[1] << 8 | (uint32_t)c1n_mac[2] << 16 |
+                        (uint32_t)c1n_mac[3] << 24;
+   c1n[C1NET_W_MACHI] = (uint32_t)c1n_mac[4] | (uint32_t)c1n_mac[5] << 8;
+}
+
+// the GEM's specific address 2: core 1's MAC while it takes frames (writing the low word
+// disables the match, the high word enables it)
+static void c1net_filter(void)
+{
+   uint32_t b = EmacPsInstance.Config.BaseAddress;
+
+   if (ethernet_task_state != ETH_TASK_READY)
+      return;
+   XEmacPs_WriteReg(b, XEMACPS_LADDR2L_OFFSET, c1n[C1NET_W_MACLO]);
+   if (c1n_on)
+      XEmacPs_WriteReg(b, XEMACPS_LADDR2H_OFFSET, c1n[C1NET_W_MACHI]);
+}
+
+// the RX handler's frame: 1 if it is core 1's alone, 0 if the Amiga takes it (a broadcast
+// goes to both)
+static int c1net_rx(const uint8_t *f, int len)
+{
+   int mine;
+   uint32_t wr, rd;
+   uint8_t *slot;
+
+   if (!c1n_on || len < 14 || len > (int)(C1NET_SLOT - C1NET_DATA))
+      return 0;
+   mine = !memcmp(f, c1n_mac, 6);
+   if (!mine && (f[0] & f[1] & f[2] & f[3] & f[4] & f[5]) != 0xff)
+      return 0;
+   wr = c1n[C1NET_W_RXWR];
+   rd = c1n[C1NET_W_RXRD];
+   if (wr - rd >= C1NET_RX_SLOTS) {
+      c1n[C1NET_W_RXDROPS]++;
+      return mine;
+   }
+   slot = (uint8_t *)(RTG_BASE + C1NET_RX_OFF + (wr % C1NET_RX_SLOTS) * C1NET_SLOT);
+   memcpy(slot + C1NET_DATA, f, len);
+   *(volatile uint32_t *)slot = len;
+   __asm__ volatile ("dmb sy" ::: "memory");    // the frame before the index
+   c1n[C1NET_W_RXWR] = wr + 1;
+   c1n[C1NET_W_RXFRAMES]++;
+   return mine;
+}
+
+// core 0's main loop: core 1 switched on or off, its frames out (a few per call)
+void c1net_poll(void)
+{
+   int on;
+   uint32_t rd, wr, n, len;
+   volatile uint8_t *slot;
+
+   if (ethernet_task_state != ETH_TASK_READY)
+      return;
+   on = c1n[C1NET_W_ON] == 1;
+   if (on != c1n_on) {
+      c1n_on = on;
+      c1net_filter();
+      printf("EMAC: core 1's network %s\n", on ? "on" : "off");
+   }
+   if (!on)
+      return;
+   rd = c1n[C1NET_W_TXRD];
+   wr = c1n[C1NET_W_TXWR];
+   if (wr - rd > C1NET_TX_SLOTS) {      // core 1 lost its count: start again where it is
+      c1n[C1NET_W_TXRD] = wr;
+      return;
+   }
+   for (n = 0; rd != wr && n < 8; n++, rd++) {
+      __asm__ volatile ("dmb sy" ::: "memory");   // the index before the frame
+      slot = (volatile uint8_t *)(RTG_BASE + C1NET_TX_OFF + (rd % C1NET_TX_SLOTS) * C1NET_SLOT);
+      len = *(volatile uint32_t *)slot;
+      if (len < 14 || len > C1NET_SLOT - C1NET_DATA || eth_send((volatile char *)(slot + C1NET_DATA), len))
+         c1n[C1NET_W_TXERRS]++;
+      else
+         c1n[C1NET_W_TXFRAMES]++;
+      c1n[C1NET_W_TXRD] = rd + 1;
+   }
 }
