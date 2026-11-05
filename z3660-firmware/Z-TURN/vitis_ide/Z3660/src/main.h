@@ -198,6 +198,7 @@ unsigned int READ_NBG_ARM(void);
 #define FPGA_256MB_AUTOCONFIG_EN      (1L<<12)  // SAXI REG0 12
 #define FPGA_RTG_AUTOCONFIG_EN        (1L<<13)  // SAXI REG0 13
 #define FPGA_SCSI_AUTOCONFIG_EN       (1L<<14)  // SAXI REG0 14
+#define FPGA_RAM2_EN                  (1L<<15)  // SAXI REG0 15: CPU RAM at 0x10000000-0x17FFFFFF
 #define FPGA_ENABLE_CPUCLK_OUTPUT     (1L<<16)  // SAXI REG0 16
 #define FPGA_AUTOCONFIG_BOOT_EN       (1L<<27)  // SAXI REG0 27
 #define FPGA_BP                       (1L<<28)  // SAXI REG0 28

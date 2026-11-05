@@ -170,6 +170,7 @@ const char *config_item_names[] = {
       "eth_taildrop",
       "eth_tx_poll",
       "eth_adv1000",
+      "cpu_ram2",
 };
 /* Tripwire: config_item_names[] is indexed by CONFITEM, so a new enum entry with
  * no matching string silently shifts every key after it -- the parser would then
@@ -456,6 +457,7 @@ void load_default_config(void)
    config.eth_taildrop=CFG_ETH_DEFAULT_taildrop;
    config.eth_tx_poll=CFG_ETH_DEFAULT_tx_poll;
    config.eth_adv1000=CFG_ETH_DEFAULT_adv1000;
+   config.cpu_ram2=0;
 }
 void write_config_file(char *filename)
 {
@@ -612,6 +614,8 @@ void write_config_file(char *filename)
    print_line(&fil,"eth_tx_poll YES\n");
    print_line(&fil,"# advertise 1000BASE-T at OS time\n");
    print_line(&fil,"eth_adv1000 NO\n");
+   print_line(&fil,"# CPU RAM also at $10000000-$17FFFFFF (128 MB more for AMIX; WHDLoad does not run with it)\n");
+   print_line(&fil,"cpu_ram2 NO\n");
    print_line(&fil,"\n");
    f_close(&fil);
 
@@ -889,6 +893,7 @@ retry:
    config.eth_taildrop=CFG_ETH_DEFAULT_taildrop;
    config.eth_tx_poll=CFG_ETH_DEFAULT_tx_poll;
    config.eth_adv1000=CFG_ETH_DEFAULT_adv1000;
+   config.cpu_ram2=0;
 
    while (!f_eof(&fil))
    {
@@ -1344,6 +1349,12 @@ retry:
          get_next_string(parse_line, cur_cmd, &str_pos, ' ');
          config.eth_adv1000=get_yesno_type(cur_cmd);
          if(verbose) printf("[CFG] eth_adv1000 %s.\n", yesno_names[config.eth_adv1000]);
+         break;
+
+      case CONFITEM_CPU_RAM2:
+         get_next_string(parse_line, cur_cmd, &str_pos, ' ');
+         config.cpu_ram2=get_yesno_type(cur_cmd);
+         if(verbose) printf("[CFG] CPU RAM2 %s.\n", yesno_names[config.cpu_ram2]);
          break;
 
       case CONFITEM_NONE:

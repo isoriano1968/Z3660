@@ -148,6 +148,10 @@ extern uint32_t clken;
       }while(0)
 #define DISABLE_CPU_RAM_FPGA do{ DiscreteClear(REG0, FPGA_RAM_EN);\
       }while(0)
+#define ENABLE_CPU_RAM2_FPGA do{   DiscreteSet(REG0, FPGA_RAM2_EN);\
+      }while(0)
+#define DISABLE_CPU_RAM2_FPGA do{ DiscreteClear(REG0, FPGA_RAM2_EN);\
+      }while(0)
 #define ENABLE_MAPROM_FPGA do{   DiscreteSet(REG0, FPGA_MAPROM_EN);\
       }while(0)
 #define DISABLE_MAPROM_FPGA do{ DiscreteClear(REG0, FPGA_MAPROM_EN);\
@@ -1540,6 +1544,18 @@ int main()
       ENABLE_CPU_RAM_FPGA;
    else
       DISABLE_CPU_RAM_FPGA;
+
+   // the cpu_ram2 bitstream's design has a 32-bit HP2 port (its second video
+   // VDMA); its ps7_init sets the AFI to 32 bits, but the FSBL that runs is
+   // BOOT.BIN's, so set it here: AFI_RDCHAN_CTRL and AFI_WRCHAN_CTRL, 32BitEn
+   Xil_Out32(0xF800A000, Xil_In32(0xF800A000) | 1);
+   Xil_Out32(0xF800A014, Xil_In32(0xF800A014) | 1);
+
+   // the second CPU RAM range, 0x10000000-0x17FFFFFF (needs the cpu_ram2 bitstream)
+   if(config.cpu_ram2)
+      ENABLE_CPU_RAM2_FPGA;
+   else
+      DISABLE_CPU_RAM2_FPGA;
 
    if(config.autoconfig_rtg)
    {
