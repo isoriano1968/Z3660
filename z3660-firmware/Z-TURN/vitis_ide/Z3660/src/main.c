@@ -1933,24 +1933,11 @@ int main()
    usb_read_pending = 0;
    usb_write_pending = 0;
 
-   // h264bench (vplay-amix arm/h264bench): with a real 060, core 1 is idle; a test image
-   // loaded at 0x38000000 starts with the mark "H264" and its entry. It touches neither the
-   // bus nor the 68k, only board memory, and answers the same handshake as the emulator.
-#define H264BENCH_BASE 0x38000000
-   if(emu!=1 && *(volatile uint32_t *)H264BENCH_BASE==0x48323634)
-   {
-      volatile uint32_t *ack=(volatile uint32_t *)0xFFFF0000;
-      printf("Starting h264bench on Core1 at 0x%08lX\n",*(volatile uint32_t *)(H264BENCH_BASE+4));
-      *ack=1;
-      *(volatile uint32_t *)(0xFFFFFFF0)=*(volatile uint32_t *)(H264BENCH_BASE+4);
-      Xil_DCacheFlush();
-      Xil_ICacheInvalidate();
-      __asm__("sev");
-      core1_started=1;
-      for(int i=0;i<1000 && *ack==1;i++)
-         xc3_usleep(1000);
-      printf(*ack==1?"h264bench: no answer from Core1\n":"h264bench: Core1 runs\n");
-   }
+   // No core 1 image is started from board memory here: after a restart of core 0
+   // (long reset, hard reboot) the image left at 0x38000000 has run already (its data
+   // and bss are not the file's); restarted, it died at once and the loader then refused
+   // the fresh one (-4) until a power cycle.  Core 1 waits for the loader (armbench -load,
+   // /etc/rc2.d/S98z3660core).
 
    if(emu==1) // EMUs
    {
