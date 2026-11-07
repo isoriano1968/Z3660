@@ -45,7 +45,7 @@ only with `amix_relocate YES`.
 | 0x4E4  | REG_ZZ_AMIX_RTG_BASE     | requested RTG base (060)           | active `rtg_base060`         |
 | 0x4E8  | REG_ZZ_AMIX_COMMIT       | 0x434F4D54 "COMT" commit, 0x44454654 "DEFT" back to Amiga bases | 0x414D5831 "AMX1" (ID) |
 | 0x4EC  | REG_ZZ_AMIX_STATUS       | ignored                            | status, signed (below)       |
-| 0x4F0  | REG_ZZ_AMIX_FPGA_RESET   | reserved: 0x42525354 "BRST" (only when built with `-DZ3660_AMIX_FPGA_RESET`) | 1 if built in, else 0 |
+| 0x4F0  | REG_ZZ_AMIX_FPGA_RESET   | 0x42525354 "BRST": FPGA bus reset (REG0 bit 31, 10 ms) | 1 (the reset is there) |
 
 Status codes:
 
@@ -166,11 +166,14 @@ freeze the SLCR reset of core 1 caused.
 
 - **The 060's own cycle.** The 060 asks for the reset with a write that the FPGA holds
   until core 0 acks it. A reset during that cycle would drop it, and the 060 would hang.
-  The reserved implementation (`-DZ3660_AMIX_FPGA_RESET`, `z3map_poll()`) therefore
-  pulses only after the ack: it waits 200 µs, then pulses for 100 µs.
+  `z3map_poll()` therefore pulses only after the ack: it waits 200 µs, then holds
+  bit 31 for 10 ms, the same pulse reset_thread gives at every Amiga reset (shanshe's
+  code: `DiscreteSet(REG0, FPGA_RESET); xc3_usleep(10000); DiscreteClear(...)`).
 - **Every 060 bus cycle goes through the FPGA.** That includes CPU RAM, chip RAM and
   ROM, because the FPGA either serves the cycle or passes TS to the CPLD. Any cycle in
-  flight during the pulse is lost. pvmk must stay off the bus for a few ms:
+  flight during the pulse is lost. pvmk must stay off the bus for at least 20 ms
+  (200 µs + 10 ms pulse + core 0's main loop latency, with margin), timed by the 060
+  itself, since a CIA read is a bus cycle too:
   - a short loop running from the instruction cache
   - no data accesses
   - write buffer drained (`nop`)
@@ -179,8 +182,10 @@ freeze the SLCR reset of core 1 caused.
   values, so this is harmless as long as nothing has changed REG0.
 - **Core 0 itself must not master the Amiga bus during the pulse.** It does not: the
   pulse runs inline in the main loop.
-- **The implementation is untested and off by default.** Without the define, a write
-  of "BRST" only sets status -7.
+- **Built in since 2026-11-07, untested on the board.** It acts only with
+  `amix_relocate YES` and a real 060; otherwise a write of "BRST" sets an error status
+  and nothing happens.  shanshe confirmed (2026-11-07) that bit 31 needs no new
+  bitstream and leaves video, framebuffer and the ARM alone.
 
 ## Other constant sites
 
@@ -210,7 +215,7 @@ These were not changed:
    - A COMMIT with bad bases (e.g. 0x48000000) is refused with status -4/-5, and
      nothing changes.
    - DEFT keeps status 0.
-3. **pvmk** (later): bus reset (needs shanshe's answer and a build with the define),
+3. **pvmk** (later): bus reset ("BRST", wait 20 ms),
    autoconfig at 0x20000000/0x30000000, COMMIT, status 1.
    - Then AMIX with bootinfo bases: SCSI root mount, RTG.
    - Then reboot: the Amiga reset must bring AmigaOS back with the boards at

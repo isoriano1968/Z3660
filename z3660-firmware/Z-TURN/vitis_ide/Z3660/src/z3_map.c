@@ -106,22 +106,21 @@ static void commit(void)
           z3ram_base060, Z3RAM_ARM_BASE, rtg_base060);
 }
 
-#ifdef Z3660_AMIX_FPGA_RESET
-/* UNTESTED.  Pulses REG0 bit 31 (FPGA_RESET), the same reset the firmware gives the bus
- * logic at every Amiga reset (reset_thread): z3660.v clears the autoconfig state
- * (configured/shutup, both bases) and re-latches the board enables from REG0.  It does
- * not touch the video/audio IP or the ARM.  Done after the 060's write has been acked,
- * so that the reset does not cut its own cycle; the 060 must stay off the bus meanwhile
+/* The FPGA bus reset for an AMIX loader (pvmk): pulses REG0 bit 31 (FPGA_RESET) the way
+ * reset_thread does at every Amiga reset (10 ms, as shanshe's code): z3660.v clears the
+ * autoconfig state (configured/shutup, both bases) and re-latches the board enables
+ * from REG0.  It does not touch the video/audio IP or the ARM (shanshe 2026-11-07).
+ * Done after the 060's write has been acked, so that the reset does not cut its own
+ * cycle; the 060 must stay off the bus meanwhile, at least AMIX_BUSRESET_WAIT_US
  * (AMIX-MODE.md).  After the pulse both boards wait at 0xFF000000 for autoconfig, and
- * the RTG registers (this status too) are unreachable until the RTG is configured. */
-#define AMIX_BUSRESET_DELAY_US  200   // after the ack, before the pulse
-#define AMIX_BUSRESET_PULSE_US  100
+ * the RTG registers (this status too) are unreachable until the RTG is configured.
+ * Only with amix_relocate YES and a real 060 (z3map_write_reg). */
+#define AMIX_BUSRESET_DELAY_US  200     // after the ack, before the pulse
+#define AMIX_BUSRESET_PULSE_US  10000   // as reset_thread and shanshe's code
 static int busreset_pending;
-#endif
 
 void z3map_poll(void)
 {
-#ifdef Z3660_AMIX_FPGA_RESET
    if(!busreset_pending)
       return;
    busreset_pending=0;
@@ -132,7 +131,6 @@ void z3map_poll(void)
    back_to_amiga_bases();     // nothing is configured now; the loader commits its bases next
    status=AMIX_ST_RESET_DONE;
    printf("[AMIX] FPGA bus reset done\n");
-#endif
 }
 
 int z3map_write_reg(uint32_t address, uint32_t zdata)
@@ -161,7 +159,6 @@ int z3map_write_reg(uint32_t address, uint32_t zdata)
       case REG_ZZ_AMIX_STATUS:
          return 1;
       case REG_ZZ_AMIX_FPGA_RESET:
-#ifdef Z3660_AMIX_FPGA_RESET
          if(zdata==AMIX_CMD_BUSRESET && real_060)
          {
             busreset_pending=1;
@@ -169,9 +166,6 @@ int z3map_write_reg(uint32_t address, uint32_t zdata)
          }
          else
             status=real_060?AMIX_ST_ERR_CMD:AMIX_ST_ERR_NOT_060;
-#else
-         status=AMIX_ST_ERR_CMD;
-#endif
          return 1;
    }
    return 0;
@@ -188,11 +182,7 @@ int z3map_read_reg(uint32_t address, uint32_t *data)
       case REG_ZZ_AMIX_COMMIT:     *data=AMIX_ID;           return 1;
       case REG_ZZ_AMIX_STATUS:     *data=(uint32_t)status;  return 1;
       case REG_ZZ_AMIX_FPGA_RESET:
-#ifdef Z3660_AMIX_FPGA_RESET
-         *data=1;
-#else
-         *data=0;
-#endif
+         *data=1;                // the bus reset is there
          return 1;
    }
    return 0;

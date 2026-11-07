@@ -219,7 +219,7 @@ enum zz_reg_offsets {
    REG_ZZ_AMIX_RTG_BASE    = 0x4E4,  // W: requested RTG base      R: active rtg_base060
    REG_ZZ_AMIX_COMMIT      = 0x4E8,  // W: AMIX_CMD_*              R: AMIX_ID
    REG_ZZ_AMIX_STATUS      = 0x4EC,  // R: AMIX_ST_* (signed)      W: ignored
-   REG_ZZ_AMIX_FPGA_RESET  = 0x4F0,  // reserved: W AMIX_CMD_BUSRESET (only with -DZ3660_AMIX_FPGA_RESET)
+   REG_ZZ_AMIX_FPGA_RESET  = 0x4F0,  // W AMIX_CMD_BUSRESET: FPGA bus reset; R 1
                                      //           R: 1 when built in, 0 when not
 
    //NOT USED 0x4F4 - 0x4FC
@@ -265,7 +265,7 @@ enum zz_reg_offsets {
 // REG_ZZ_AMIX_COMMIT / REG_ZZ_AMIX_FPGA_RESET values
 #define AMIX_CMD_COMMIT    0x434F4D54UL  // "COMT": switch to the bases written above (validated)
 #define AMIX_CMD_DEFAULTS  0x44454654UL  // "DEFT": back to the Amiga-mode bases
-#define AMIX_CMD_BUSRESET  0x42525354UL  // "BRST": FPGA bus reset (reserved, untested)
+#define AMIX_CMD_BUSRESET  0x42525354UL  // "BRST": FPGA bus reset (REG0 bit 31, 10 ms)
 #define AMIX_ID            0x414D5831UL  // "AMX1": read from REG_ZZ_AMIX_COMMIT
 // REG_ZZ_AMIX_STATUS
 #define AMIX_ST_DEFAULT       0   // Amiga-mode bases active

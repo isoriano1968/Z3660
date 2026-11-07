@@ -45,7 +45,7 @@ static inline uint32_t z3ram_060_to_arm(uint32_t a)
 
 void z3map_init(int real_cpu);     // after the config is final; real_cpu: the 060 drives the bus
 void z3map_amiga_reset(void);      // Amiga reset: back to the Amiga-mode bases
-void z3map_poll(void);             // main loop, after rtg_thread (deferred FPGA reset, if built)
+void z3map_poll(void);             // main loop, after rtg_thread (the deferred FPGA bus reset)
 int  z3map_write_reg(uint32_t address, uint32_t zdata);   // 1: handled
 int  z3map_read_reg(uint32_t address, uint32_t *data);    // 1: handled
 
