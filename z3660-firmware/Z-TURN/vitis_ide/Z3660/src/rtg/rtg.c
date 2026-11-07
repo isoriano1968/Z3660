@@ -36,6 +36,7 @@
 #include "xtime_l.h"
 #include "usb_proxy.h"
 #include "../core0_stats.h"
+#include "../z3_map.h"
 
 extern arm_decoder_shared_arm_t *bridge_state_arm;
 extern uint32_t fifo_read_index;
@@ -817,6 +818,8 @@ uint32_t read_rtg_register(uint32_t zaddr)
       data=swap32(*(uint32_t *)(RTG_BASE+address));
       return(data);
    }
+   if(z3map_read_reg(address,&data))   // AMIX mode registers (only with amix_relocate YES)
+      return(data);
    switch (address)
    {
       case REG_ZZ_SOFT3D_OP:
@@ -1075,6 +1078,8 @@ void write_rtg_register(uint32_t zaddr,uint32_t zdata)
             debug_console.step=0;
       }
    }
+   if(z3map_write_reg(address,zdata))   // AMIX mode registers (only with amix_relocate YES)
+      return;
    switch (address) {
       case REG_ZZ_PAN:
          video_state->framebuffer_pan_offset = zdata;

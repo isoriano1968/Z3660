@@ -209,7 +209,20 @@ enum zz_reg_offsets {
 
    REG_ZZ_USB_PROXY_CMD    = 0x350,
 
-   //NOT USED 0x354 - 0x4FC
+   //NOT USED 0x354 - 0x4DC
+
+   // AMIX mode (z3_map.c, AMIX-MODE.md): a loader that re-autoconfigured the Z3 RAM
+   // and the RTG tells core 0 the new 060 bases.  Serviced only with z3660cfg.txt
+   // "amix_relocate YES" and a real 060; otherwise these behave as unused offsets
+   // (writes ignored, reads 0xFFFFFFFF).  Big-endian longwords from the 060.
+   REG_ZZ_AMIX_RAM_BASE    = 0x4E0,  // W: requested Z3 RAM base   R: active z3ram_base060
+   REG_ZZ_AMIX_RTG_BASE    = 0x4E4,  // W: requested RTG base      R: active rtg_base060
+   REG_ZZ_AMIX_COMMIT      = 0x4E8,  // W: AMIX_CMD_*              R: AMIX_ID
+   REG_ZZ_AMIX_STATUS      = 0x4EC,  // R: AMIX_ST_* (signed)      W: ignored
+   REG_ZZ_AMIX_FPGA_RESET  = 0x4F0,  // reserved: W AMIX_CMD_BUSRESET (only with -DZ3660_AMIX_FPGA_RESET)
+                                     //           R: 1 when built in, 0 when not
+
+   //NOT USED 0x4F4 - 0x4FC
 
    REG_ZZ_SEL_KS_TXT     = 0x500,
    REG_ZZ_SEL_SCSI_TXT   = 0x600,
@@ -248,6 +261,24 @@ enum zz_reg_offsets {
 
 */
 };
+
+// REG_ZZ_AMIX_COMMIT / REG_ZZ_AMIX_FPGA_RESET values
+#define AMIX_CMD_COMMIT    0x434F4D54UL  // "COMT": switch to the bases written above (validated)
+#define AMIX_CMD_DEFAULTS  0x44454654UL  // "DEFT": back to the Amiga-mode bases
+#define AMIX_CMD_BUSRESET  0x42525354UL  // "BRST": FPGA bus reset (reserved, untested)
+#define AMIX_ID            0x414D5831UL  // "AMX1": read from REG_ZZ_AMIX_COMMIT
+// REG_ZZ_AMIX_STATUS
+#define AMIX_ST_DEFAULT       0   // Amiga-mode bases active
+#define AMIX_ST_COMMITTED     1   // the written bases are active
+#define AMIX_ST_RESET_PENDING 2   // bus reset accepted, not yet done
+#define AMIX_ST_RESET_DONE    3   // bus reset done; boards unconfigured until autoconfig
+#define AMIX_ST_ERR_NOT_060  (-2) // no real 060 on the bus (emulation modes)
+#define AMIX_ST_ERR_BOARDS   (-3) // autoconfig_ram and autoconfig_rtg must both be YES
+#define AMIX_ST_ERR_RAM      (-4) // RAM base: not 256 MB aligned, below 0x18000000 or top > 0x40000000
+#define AMIX_ST_ERR_RTG      (-5) // RTG base: not 128 MB aligned, below 0x18000000, top > 0x40000000,
+                                  //  or on ARM 0x20000000-0x2FFFFFFF / 0x38000000-0x3FFFFFFF
+#define AMIX_ST_ERR_OVERLAP  (-6) // RAM and RTG overlap
+#define AMIX_ST_ERR_CMD      (-7) // unknown command / bus reset not built in
 
 enum z3660_card_features {
    CARD_FEATURE_NONE,

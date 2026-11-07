@@ -17,6 +17,7 @@
 
 #include <xparameters.h>
 #include "../memorymap.h"
+#include "../z3_map.h"
 #include <xil_cache.h>
 
 #include "floppy.h"
@@ -367,10 +368,10 @@ void handle_pifloppy_reg_write(uint32_t addr, uint32_t val, uint8_t type)
 
         uint32_t map = buffer_addr;
         if ((config.cpu_ram && (map >= 0x08000000) && (map < 0x10000000)) ||
-            (config.autoconfig_ram && (map >= 0x40000000) && (map < 0x50000000)))
+            (config.autoconfig_ram && z3ram_has060(map)))
         {
             // DMA directly to Amiga RAM
-            if (map >= 0x40000000) map -= (0x40000000 - 0x20000000);
+            if (z3ram_has060(map)) map = z3ram_060_to_arm(map);
             DEBUG("[PIFLOPPY-%ld] DMA Read to mapped range 0x%08lX.\n", val, map);
             pifloppy_used_dma = 0;
             unsigned int n_bytes;
@@ -433,10 +434,10 @@ void handle_pifloppy_reg_write(uint32_t addr, uint32_t val, uint8_t type)
 
         uint32_t map = buffer_addr;
         if ((config.cpu_ram && (map >= 0x08000000) && (map < 0x10000000)) ||
-            (config.autoconfig_ram && (map >= 0x40000000) && (map < 0x50000000)))
+            (config.autoconfig_ram && z3ram_has060(map)))
         {
             // DMA from Amiga RAM
-            if (map >= 0x40000000) map -= 0x20000000;
+            if (z3ram_has060(map)) map = z3ram_060_to_arm(map);
             DEBUG("[PIFLOPPY-%ld] DMA Write from mapped range 0x%08lX.\n", val, map);
             pifloppy_used_dma = 0;
             unsigned int n_bytes;
@@ -557,10 +558,10 @@ void handle_pifloppy_reg_write(uint32_t addr, uint32_t val, uint8_t type)
        printf("[PIFLP] Driver copy/patch called, destination address %.8lX.\n", val);
        //            r = 0;//get_mapped_item_by_address(cfg, val);
        if ( ((val>=0x08000000) && (val<0x10000000) && config.cpu_ram)
-             ||((val>=0x40000000) && (val<0x50000000) && config.autoconfig_ram)
+             ||(z3ram_has060(val) && config.autoconfig_ram)
        )
        {
-          if(val>=0x40000000) val-=0x20000000;
+          if (z3ram_has060(val)) val = z3ram_060_to_arm(val);
 
           //            if (r != -1) {
           uint32_t addr = val;// - cfg->map_offset[r];

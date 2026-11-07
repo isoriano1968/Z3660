@@ -58,6 +58,7 @@ extern ENV_FILE_VARS env_file_vars_temp[9]; // really size 8
 #include "core0_stats.h"
 
 #include "usb_proxy.h"
+#include "z3_map.h"
 
 // usb state
 // Protocol: 0 = idle/error, 0xFFFF = busy (transfer in progress), other = success (blocks transferred)
@@ -638,7 +639,14 @@ void finish_MMU_OP(void)
    isb(); /* synchronize context on this processor */
 }
 
+static void rtg_cache_policy_entries(uint32_t ini, uint32_t fb_policy, uint32_t soft3d_policy);
 void rtg_cache_policy_core0(uint32_t ini, uint32_t fb_policy, uint32_t soft3d_policy)
+{
+   rtg_cache_policy_entries(ini, fb_policy, soft3d_policy);
+   finish_MMU_OP();
+}
+// ini: the RTG's 060 address >> 20; core 0 maps that VA onto the RTG as well (rtg_base060)
+static void rtg_cache_policy_entries(uint32_t ini, uint32_t fb_policy, uint32_t soft3d_policy)
 {
 /*
    for(int i=ini,j=0;j<2;i++,j++) // RTG registers
@@ -704,8 +712,6 @@ void rtg_cache_policy_core0(uint32_t ini, uint32_t fb_policy, uint32_t soft3d_po
       setMMU(address,address|ETHERNET_CACHE_POLICY);
       setMMU(i*0x100000UL,address|ETHERNET_CACHE_POLICY);
    }
-
-   finish_MMU_OP();
 }
 struct Soft3DData {
    volatile uint32_t offset[4];
@@ -713,6 +719,49 @@ struct Soft3DData {
    volatile uint16_t x[2], y[2];
 };
 extern volatile struct Soft3DData* data3d;
+
+void data3d_follow_rtg(void)
+{
+   data3d = (volatile struct Soft3DData*)((uint32_t)Z3_SOFT3D_ADDR_DATA3D-RTG_BASE+rtg_base060);
+}
+
+/* AMIX mode (z3_map.c): core 0's mirror of the RTG moves with rtg_base060.  This runs
+ * while the 060 waits on its register write, but core 1 may run: range cache
+ * maintenance on the table only, never the whole-L2 Xil_DCacheFlush() of finish_MMU_OP().
+ * The sections the mirror covers are saved and put back on the way to Amiga mode (core 0
+ * uses its own DDR there otherwise, e.g. SMUSH at 0x30000000).  The Amiga-mode mirror
+ * stays in place meanwhile: nothing on the 060 side reaches it. */
+#define RTG_MIRROR_SECTIONS (RTG_BOARD_SIZE>>20)
+static uint32_t rtg_mirror_saved[RTG_MIRROR_SECTIONS];
+static uint32_t rtg_mirror_saved_ini;
+static int rtg_mirror_saved_valid;
+static void mmu_table_sync(void)
+{
+   Xil_DCacheFlushRange((INTPTR)MMUTable_ptr, 4096*sizeof(uint32_t));
+   mtcp(XREG_CP15_INVAL_UTLB_UNLOCKED, 0U);
+   mtcp(XREG_CP15_INVAL_BRANCH_ARRAY, 0U);
+   dsb();
+   isb();
+}
+void rtg_mirror_core0_move(uint32_t new_rtg_base060)
+{
+   uint32_t ini=new_rtg_base060>>20;
+   for(uint32_t k=0;k<RTG_MIRROR_SECTIONS;k++)
+      rtg_mirror_saved[k]=MMUTable_ptr[ini+k];
+   rtg_mirror_saved_ini=ini;
+   rtg_mirror_saved_valid=1;
+   rtg_cache_policy_entries(ini,RTG_FB_CACHE_POLICY_FOR_060,RTG_SOFT3D_CACHE_POLICY_FOR_060);
+   mmu_table_sync();
+}
+void rtg_mirror_core0_restore(void)
+{
+   if(!rtg_mirror_saved_valid)
+      return;
+   for(uint32_t k=0;k<RTG_MIRROR_SECTIONS;k++)
+      MMUTable_ptr[rtg_mirror_saved_ini+k]=rtg_mirror_saved[k];
+   rtg_mirror_saved_valid=0;
+   mmu_table_sync();
+}
 extern volatile int read_reset;
 int reset_time_counter=0;
 int reset_time_counter_max=60*4;
@@ -814,6 +863,7 @@ int reset_thread(struct pt *pt)
       // TODO reset ETH
       //      EmacPsResetDevice(EmacPsInstancePtr);
       ethernet_init();
+      z3map_amiga_reset();   // AmigaOS autoconfigs the boards at the usual bases again
 
       DiscreteSet(REG0, FPGA_RESET);
       xc3_usleep(10000);
@@ -1602,6 +1652,8 @@ int main()
 
    sw1_is_down|=!XGpioPs_ReadPin(&GpioPs, USER_SW1);
 
+   z3map_init(emu==0);   // rtg_base060, z3ram_base060: the Amiga-mode bases
+
    if(emu==1) // EMUs
    {
       //the autoconfig and CPU RAM are emulated in cpu_emulator(), so we don't need hardware autoconfig
@@ -1618,24 +1670,19 @@ int main()
       DISABLE_RTG_AUTOCONFIG;
       DISABLE_SCSI_AUTOCONFIG;
       DiscreteClear(REG0, FPGA_RESET);
-      //      int ini=config.autoconfig_ram?0x500:0x400;
-      int ini=0x100;
-      if(config.autoconfig_rtg==1)
-         ini=config.autoconfig_ram?0x500:0x400;
+      int ini=rtg_base060>>20;
       rtg_cache_policy_core0(ini,RTG_FB_CACHE_POLICY_FOR_EMU,RTG_SOFT3D_CACHE_POLICY_FOR_EMU);
       rtg_cache_policy_core0((RTG_BASE>>20)&0xFFF, RTG_FB_CACHE_POLICY_FOR_EMU, RTG_SOFT3D_CACHE_POLICY_FOR_EMU);
    }
    else // 060 or Mohter Board CPU
    {
-      int ini;
+      int ini=rtg_base060>>20;
       if(config.autoconfig_rtg==1)
       {
-         ini=config.autoconfig_ram?0x500:0x400;
          DISABLE_SCSI_AUTOCONFIG;
       }
       else
       {
-         ini=0x100;
          if(config.scsiboot)
             ENABLE_SCSI_AUTOCONFIG;
          else
@@ -1852,11 +1899,7 @@ int main()
    // Restore RTG CACHE Policy modified in mobotest
    if(config.boot_mode==CPU || config.boot_mode==MOBOCPU)
    {
-      int ini;
-      if(config.autoconfig_rtg==1)
-         ini=config.autoconfig_ram?0x500:0x400;
-      else
-         ini=0x100;
+      int ini=rtg_base060>>20;
       rtg_cache_policy_core0(ini,RTG_FB_CACHE_POLICY_FOR_060,RTG_SOFT3D_CACHE_POLICY_FOR_060);
       rtg_cache_policy_core0((RTG_BASE>>20)&0xFFF, RTG_FB_CACHE_POLICY_FOR_060, RTG_SOFT3D_CACHE_POLICY_FOR_060);
    }
@@ -1901,14 +1944,7 @@ int main()
    Xil_L2CacheFlush();
 
    if(data3d==NULL)
-   {
-      uint32_t offset=0x10000000;
-      if(config.autoconfig_rtg==1)
-      {
-         offset=config.autoconfig_ram?0x50000000:0x40000000;
-      }
-      data3d = (volatile struct Soft3DData*)((uint32_t)Z3_SOFT3D_ADDR_DATA3D-RTG_BASE+offset);
-   }
+      data3d_follow_rtg();
 
 
    PT_INIT(&pt_debug);
@@ -2065,6 +2101,7 @@ int main()
          interrupt_thread(&pt_interrupt);
 
          rtg_thread(&pt_rtg);
+         z3map_poll();          // AMIX: deferred work after the 060's write was acked
          {
             static int reset_thread_counter=0;
             reset_thread_counter++;

@@ -12,6 +12,7 @@
 
 #include <xparameters.h>
 #include "../memorymap.h"
+#include "../z3_map.h"
 #include <xil_cache.h>
 
 #include "z3660_scsi_enums.h"
@@ -1429,10 +1430,10 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       // that contract here. cpu_ram stays force-disabled for AMIX (no $08 autoconfig board);
       // amix_mode alone re-enables the direct path for the drct_bank CPU-RAM window.
       if ( ((config.cpu_ram || config.amix_mode) && (map>=0x08000000) && (map<CPU_RAM_TOP))
-         ||(config.autoconfig_ram && (map>=0x40000000) && (map<0x50000000))
+         ||(config.autoconfig_ram && z3ram_has060(map))
       )
       {
-         if(map>=0x40000000) map-=(0x40000000-0x20000000);
+         if (z3ram_has060(map)) map = z3ram_060_to_arm(map);
          DEBUG("[PISCSI-%ld] \"DMA\" Read goes to mapped range 0x%08lX.\n", val, map);
          used_dma=0;
          /* Direct-DMA read coherency: the destination is guest RAM the 68k side may
@@ -1603,10 +1604,10 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       // so a buffer at/above $08000000 is NOT in the bounce and MUST be read directly from
       // the drct_bank DDR CPU-RAM (guest==host 1:1); bouncing it would write stale bytes.
       if ( ((map>=0x08000000) && (map<CPU_RAM_TOP) && (config.cpu_ram || config.amix_mode))
-            ||((map>=0x40000000) && (map<0x50000000) && config.autoconfig_ram)
+            ||(z3ram_has060(map) && config.autoconfig_ram)
       )
       {
-         if(map>=0x40000000) map-=0x20000000;
+         if (z3ram_has060(map)) map = z3ram_060_to_arm(map);
          DEBUG("[PISCSI-%ld] \"DMA\" Write comes from mapped range 0x%08lX.\n", val, map);
          used_dma=0;
          /* Direct-DMA write coherency: the guest's freshest bytes live in the cache
@@ -1737,10 +1738,10 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       DEBUG("[PISCSI] Driver copy/patch called, destination address %.8lX.\n", val);
       //            r = 0;//get_mapped_item_by_address(cfg, val);
       if ( ((val>=0x08000000) && (val<CPU_RAM_TOP) && config.cpu_ram)
-            ||((val>=0x40000000) && (val<0x50000000) && config.autoconfig_ram)
+            ||(z3ram_has060(val) && config.autoconfig_ram)
       )
       {
-         if(val>=0x40000000) val-=0x20000000;
+         if (z3ram_has060(val)) val = z3ram_060_to_arm(val);
          //            if (r != -1) {
          uint32_t addr = val;// - cfg->map_offset[r];
          uint8_t *dst_data = 0;//cfg->map_data[r];
@@ -1835,10 +1836,10 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
    case PISCSI_CMD_COPYFS: {
       uint32_t addr=val;
       if ( ((addr>=0x08000000) && (addr<CPU_RAM_TOP) && config.cpu_ram)
-            ||((addr>=0x40000000) && (addr<0x50000000) && config.autoconfig_ram)
+            ||(z3ram_has060(addr) && config.autoconfig_ram)
       )
       {
-         if(addr>=0x40000000) addr-=0x20000000;
+         if (z3ram_has060(addr)) addr = z3ram_060_to_arm(addr);
          printf("[PISCSI] Copy file system %ld to %.8lX and reloc.\n", rom_cur_fs + 1, addr);
          //            r = 0;//get_mapped_item_by_address(cfg, addr);
          //            if (r != -1) {
@@ -1863,10 +1864,10 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       DEBUG("[PISCSI] Set handler for partition %ld (DeviceNode: %.8lX)\n", rom_cur_partition, val);
       uint32_t addr = val;// - cfg->map_offset[r];
       if ( ((addr>=0x08000000) && (addr<CPU_RAM_TOP) && config.cpu_ram)
-            ||((addr>=0x40000000) && (addr<0x50000000) && config.autoconfig_ram)
+            ||(z3ram_has060(addr) && config.autoconfig_ram)
       )
       {
-         if(addr>=0x40000000) addr-=0x20000000;
+         if (z3ram_has060(addr)) addr = z3ram_060_to_arm(addr);
          struct DeviceNode *node = (struct DeviceNode *)(/*cfg->map_data[r] +*/ addr);
          char *dosID = (char *)&rom_partition_dostype[rom_cur_partition];
 
@@ -1905,10 +1906,10 @@ void handle_piscsi_reg_write(uint32_t addr, uint32_t val, uint8_t type) {
       printf("->>>>>>>>>>>>>>>>>>> a1 %08lX\n",val);
       uint32_t addr = val;
       if ( ((addr>=0x08000000) && (addr<CPU_RAM_TOP) && config.cpu_ram)
-            ||((addr>=0x40000000) && (addr<0x50000000) && config.autoconfig_ram)
+            ||(z3ram_has060(addr) && config.autoconfig_ram)
       )
       {
-         if(addr>=0x40000000) addr-=0x20000000;
+         if (z3ram_has060(addr)) addr = z3ram_060_to_arm(addr);
          char *dosID = (char *)&rom_partition_dostype[rom_cur_partition];
          filesystems[piscsi_num_fs].binary_data = NULL;
          filesystems[piscsi_num_fs].fhb = NULL;

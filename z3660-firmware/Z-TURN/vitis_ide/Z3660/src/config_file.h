@@ -161,6 +161,7 @@ typedef struct {
    int eth_tx_poll;     // transmit wait polls the send count (bounded 1.1 ms) instead of usleep(100) steps
    int eth_adv1000;     // OS-time PHY setup also advertises 1000BASE-T
    int cpu_ram2;        // CPU RAM also at 0x10000000-0x17FFFFFF (FPGA REG0 bit 15); WHDLoad fails with it
+   int amix_relocate;   // a loader may move the Z3 RAM and the RTG (REG_ZZ_AMIX_*, z3_map.c)
 } CONFIG;
 typedef struct {
    int boot_mode;
@@ -341,6 +342,7 @@ enum CONFITEM {
    CONFITEM_ETH_TX_POLL,
    CONFITEM_ETH_ADV1000,
    CONFITEM_CPU_RAM2,
+   CONFITEM_AMIX_RELOCATE,
    CONFITEM_NUM
 };
 /* ethernet key defaults (config.eth_*; an absent z3660cfg.txt line keeps these) */
